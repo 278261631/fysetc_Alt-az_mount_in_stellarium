@@ -1,0 +1,13 @@
+{
+    "version": "0.4.1",
+    "1": {
+        "name": "Fysetc AltAz",
+        "connection": "internal",
+        "equinox": "JNow",
+        "device_model": "Meade LX200 (compatible)",
+        "serial_port": "COM7",
+        "tcp_port": 10001,
+        "delay": 500000,
+        "connect_at_startup": true
+    }
+}

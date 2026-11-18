@@ -221,3 +221,16 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ---- Project specific ----
+# Original firmware backups (large binary dumps, keep local only)
+backup/
+# PlatformIO build artifacts
+.pio/
+.pioenvs/
+.piolibdeps/
+# Verification screenshots / logs
+screenshots/
+*.log
+# Stellarium runtime config backups
+stellarium_config_backup.ini

@@ -1,0 +1,52 @@
+// Stellarium 23.4 startup script for the Fysetc Alt-az mount (LX200 direct, COM7).
+//
+// 用法（任选其一，详见 docs/stellarium-config.md §5）：
+//   1) stellarium.exe --startup-script "E:\github\fysetc_Alt-az_mount_in_stellarium\tools\startup.ssc"
+//   2) config.ini 里 [scripts] startup_script = E:/github/fysetc_Alt-az_mount_in_stellarium/tools/startup.ssc
+//
+// 执行时机：插件（含 telescopes.json 的 connect_at_startup 自动连接）先 init，脚本在事件循环启动后排队执行。
+// 注意：望远镜必须已在 telescopes.json 里预置并在启动时连上 COM7，否则 telescopeGoto 会静默返回。
+// 注意：Stellarium 23.4 的 LX200 直连不发送任何时间/地点命令，固件必须自带 UTC/站点；
+//       这里的时间和地点必须与固件内的一致（用 tools/set_scope.py 先给固件对时/设站）。
+//
+// 本脚本选的目标在北京 2026-11-18 20:00 左右都位于地平线以上：
+//   M31   (RA 0h42m, Dec +41°)  -> alt≈76°, az≈79°   （大角度转动，方便观察电机）
+//   Vega  (RA 18h36m, Dec +39°) -> alt≈35°, az≈294°  （反向大角度转动，验证可重复）
+
+// 1) 固定观测时间与站点（经度在前！东经/北纬为正）
+core.setDate("2026-11-18T12:00:00", "utc");
+core.setObserverLocation(116.4, 39.9, 30, 1, "Beijing");
+
+// 屏幕标记，便于截图确认脚本确实执行
+var e2eLabel = LabelMgr.labelScreen("FYSETC E4 AltAz E2E", 20, 20, false, 24, "#00ff00");
+LabelMgr.setLabelShow(e2eLabel, true);
+
+// 2) 等 TelescopeControl 自动连接 + 首轮 #:GR#/#:GD# 轮询完成。
+//    注意：Stellarium 打开 COM7 会让 ESP32 因 DTR 复位，第一次位置查询会超时，
+//    插件随后清队列并静默 10s；因此这里等 20s，确保第一次 goto 不会被静默期吞掉。
+core.wait(20);
+
+// 3) 选中目标并让望远镜 #1 goto（等价手按 Ctrl+1）
+core.selectObjectByName("M31", false);
+TelescopeControl.slewTelescopeToSelectedObject(1);
+core.wait(12);   // 按固件速度调整；空转电机很快
+
+// 4) 连续第二个目标，验证协议/电机可重复工作
+core.selectObjectByName("Vega", false);
+TelescopeControl.slewTelescopeToSelectedObject(1);
+core.wait(12);
+
+// 5) 可选：sync 测试（会发 :Sr/:Sd/:CM#，固件需实现 :CM#）
+// TelescopeControl.syncTelescopeWithSelectedObject(1);
+
+// 6) 可选：abort 测试
+//    注意：TelescopeClientDirectLx200 未实现 telescopeAbortSlew，调用不会发 #:Q#（只写 warning 日志）。
+//    想真正中止，唯一的办法是再触发一次 goto/sync（新序列开头会发 #:Q#）。
+// TelescopeControl.abortTelescopeSlew(1);
+
+// 7) 把当前视图对到望远镜坐标（截图/肉眼检查标记位置用）
+TelescopeControl.centeringScreenByTelescope(1);
+StelMovementMgr.zoomTo(15, 1);
+core.wait(2);
+
+// 说明：脚本结束后 Stellarium 继续运行，不会自动退出。
