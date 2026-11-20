@@ -78,6 +78,17 @@ def sync_mount(port, lat, lon, when=None):
         sp.close()
 
 
+def stellarium_running():
+    """True if a stellarium.exe process exists (it would hold COM7)."""
+    try:
+        out = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq stellarium.exe", "/NH"],
+            capture_output=True, text=True, timeout=10)
+        return "stellarium.exe" in out.stdout.lower()
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def main():
     ap = argparse.ArgumentParser(description="Sync mount clock/site then start Stellarium")
     ap.add_argument("--port", default=DEFAULT_PORT)
@@ -100,6 +111,11 @@ def main():
 
     sync_mount(args.port, args.lat, args.lon, when)
     if args.no_launch:
+        return 0
+
+    if stellarium_running():
+        print("[stellarium] already running - clock sync needs Stellarium to be closed; "
+              "close it and run this launcher again for a correct alignment")
         return 0
 
     if not os.path.exists(args.stellarium):
