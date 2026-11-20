@@ -542,11 +542,21 @@ static void handleCommand(const char* cmd) {
         sendBytes("1#");
         break;
       }
+      case 'S': {
+        // :XS# - sync offset + requested target (no '#' inside, <200 bytes)
+        char sync[96];
+        scopeSyncDiag(sync, sizeof(sync));
+        sendBytes(sync);
+        sendBytes("#");
+        break;
+      }
       case 'W': {  // :XW<unixSeconds># - set UTC clock (persisted in NVS)
         double unixSec = 0.0;
         if (parseUnixSeconds(cmd + 3, &unixSec)) {
           astroSetUtcUnix(unixSec);
           astroPersistUtc();
+          // Time changed -> any existing sync alignment is invalid.
+          scopeClearSyncOffsets();
           persistFlushState();   // keep the state blob in sync with the new clock
           persistLogFlush();
           sendBytes("1#");
@@ -561,6 +571,8 @@ static void handleCommand(const char* cmd) {
           astroSetSiteLatDeg(lat);
           astroSetSiteLonDeg(lon);
           astroPersistSite();
+          // Site changed -> any existing sync alignment is invalid.
+          scopeClearSyncOffsets();
           persistLogFlush();
           sendBytes("1#");
         } else {

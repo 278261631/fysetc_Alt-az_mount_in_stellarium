@@ -88,9 +88,9 @@ constexpr size_t logPayloadLen()   { return offsetof(PersistLog, checksum); }
 void writeState() {
   if (!s_ready) return;
 
-  double tgtRa = 0.0, tgtDec = 0.0, syncRa = 0.0, syncDec = 0.0;
+  double tgtRa = 0.0, tgtDec = 0.0;
   bool haveTarget = false, tracking = false;
-  scopeGetState(&tgtRa, &tgtDec, &haveTarget, &syncRa, &syncDec, &tracking);
+  scopeGetState(&tgtRa, &tgtDec, &haveTarget, &tracking);
 
   double selRa = 0.0, selDec = 0.0;
   bool haveSelRa = false, haveSelDec = false;
@@ -106,8 +106,10 @@ void writeState() {
   st.tgtDec = tgtDec;
   st.selRa = selRa;
   st.selDec = selDec;
-  st.syncRaOffH = syncRa;
-  st.syncDecOffD = syncDec;
+  // Sync offsets intentionally NOT persisted: they are only valid for the
+  // current power session (v1.2.0).  The legacy struct fields stay zero.
+  st.syncRaOffH = 0.0;
+  st.syncDecOffD = 0.0;
   st.utc = astroUtcUnix();
   st.bootCount = s_bootCount;
   st.lastMs = lx200LastMsMillis();
@@ -137,9 +139,10 @@ void restoreState(const PersistState& st) {
   if (isfinite(st.utc) && st.utc > 0.0 && st.utc > astroUtcUnix()) {
     astroSetUtcUnix(st.utc);
   }
+  // Sync offsets (st.syncRaOffH/st.syncDecOffD) are deliberately ignored:
+  // a fresh boot always starts with zero offsets.
   scopeRestoreState(st.tgtRa, st.tgtDec,
                     (st.flags & kFlagHaveTarget) != 0,
-                    st.syncRaOffH, st.syncDecOffD,
                     (st.flags & kFlagTracking) != 0);
   lx200RestoreSelection(st.selRa, st.selDec,
                         (st.flags & kFlagHaveSelRa) != 0,
@@ -199,7 +202,7 @@ void loadLog() {
 bool isNoiseCommand(const char* cmd) {
   static const char* const kNoise[] = {
       ":GR", ":GD", ":GA", ":GZ",
-      ":XG", ":XJ",
+      ":XG", ":XJ", ":XS",
       ":GVP", ":GVN", ":GVD", ":GVT",
   };
   for (const char* n : kNoise) {

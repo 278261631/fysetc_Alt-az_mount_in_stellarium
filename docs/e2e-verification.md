@@ -116,3 +116,79 @@ LAT=39.90 LON=+116.41 BOOT=5 LASTMS=45601#
 - ⚠ Stellarium 打开 COM7 会因 DTR 复位 ESP32 → 前 15~20 秒通信会经历「5 s 超时 + 10 s 静默」，属正常；`tools/startup.ssc` 已等待 20 s 再发第一次 goto。
 - ⚠ Stellarium 不同步时间/地点，需 `tools/set_scope.py` 注入；1 分钟时间误差 ≈ 0.25° 指向误差。
 - ⚠ M31 目标的高度角被软件限位夹紧到 0°（脚本时间对应白天时）属预期；本验收固定在夜间时间。
+
+---
+
+# 8. 追加修复（2026-11-20）：用户反馈「goto 后停的坐标不对」
+
+## 8.1 现象与复现
+
+用户在 Stellarium 里选目标点「指向」后，机械确实动了，但最终显示的坐标离目标很远。
+复现（固件 v1.1.0）：`sim goto` 到 Altair（RA 19:50:47 / Dec +08:52:06）后：
+
+```
+:XG# -> S=IDLE AZ=185.98 ALT=58.84 ... RA=8.9050 DEC=-29.79 TGT=19.8464/+8.87
+```
+
+`AZ=185.98° ALT=58.84°` 与 Altair 当时理论地平坐标（AZ 186.2° / ALT 58.8°）吻合，
+即**机械位置正确**；但上报 RA/Dec 被加上了 `SYN` 偏移（实测 RA +13.05 h、Dec −38.66°）。
+
+## 8.2 两个根因
+
+1. **板子时钟过期**：FYSETC E4 无电池 RTC，Stellarium 又从不通过 LX200 下发时间/地点。
+   断电后固件只能恢复 NVS 里上次的 UTC。本次实测固件时钟比真实时间**慢 45 小时**，
+   很多目标在固件看来在地平线以下，被 ALT 限位夹到 0°，看起来就是「停错地方」。
+2. **sync 偏移被持久化且 goto 不补偿**（v1.1.0 的设计缺陷）：用户（或误操作）在时钟错误时
+   按过 Sync（`:CM#`），产生巨大偏移并写入 NVS；此后每次开机都带着这个偏移上报坐标，
+   而 goto 却按「无偏移」换算目标 → 机械到位但 Stellarium 显示位置偏移 `SYN` 量。
+
+## 8.3 v1.2.0 修复内容
+
+| 修复 | 说明 |
+|---|---|
+| goto 与上报一致化 | goto 先把请求目标减去 sync 偏移再换算 alt/az；跟踪环同样使用补偿后的运动目标。于是存在偏移时 `goto 完成 → :GR#/:GD# = 请求目标` |
+| sync 偏移不跨会话 | 不再写入/恢复 NVS；每次上电归零；`:XW`（改时间）/`:XC`（改站点）时自动清除（旧对齐随时间和站点失效） |
+| 越界 goto 明确失败 | 目标 alt 超出 `ALT_MIN-2°..ALT_MAX+2°` 时 `:MS#` 回 `1#` 并**不运动**（不再静默夹到 0° 假装成功） |
+| 新增 `:XS#` 诊断 | `SYN=<raH>/<decD> TGTREQ=<ra>/<dec>#`，可直接看到 sync 偏移 |
+| 启动器脚本 | `tools/start_stellarium.py` / `start_stellarium.bat`：启动 Stellarium 前自动把 PC 当前 UTC + 站点写入板子（`:XW`/`:XC`），从根本上解决时钟过期 |
+
+## 8.4 回归测试（`tools/regression_v120.py`，真机 COM7）
+
+```
+[1] XS after clock/site: SYN=+0.0000/+0.00 ...        -> PASS
+[2] XS after sync      : SYN=+0.0073/+1.00 ...        （人为制造 1° 偏移）
+[3] goto Altair：reported RA=19:50:52 Dec=+08°51:36
+    residual dRA=+5s dDec=-30"                         -> PASS（≈1 个步进量）
+[4] 地平线以下目标：:MS# 回 '1#'，AZS 不变（未运动）    -> PASS
+[5] :XW 重新对时后 SYN 归零                            -> PASS
+RESULT: PASS
+```
+
+## 8.5 修复后端到端验证（真实时间，不再固定时间）
+
+用 `tools/start_stellarium.py --startup-script tools/startup_actual.ssc` 启动
+（启动器先对时，脚本不修改 Stellarium 时间/地点，目标为北极星 → M81）：
+
+![Stellarium goto M81 (actual time)](images/stellarium-goto-m81-actual-time.png)
+
+- 望远镜信息面板：`Fysetc AltAz` 当前坐标为 **9h57m44s / +68°56'10"**（J2000 9h55m32s/+69°03'52"），
+  即 M81 的坐标；屏幕上 `Fysetc AltAz` 标记也落在 M81 处；
+- 固件 `:XJ#` 会话日志（Stellarium 真实下发）：
+  `:Q :Sr03:09:02 :Sd+89°22:43 :MS`（北极星 JNow）→ `:Q :Sr09:57:46 :Sd+68°55:56 :MS`（M81 JNow）；
+- Stellarium 关闭后读固件状态（经 DTR 复位，状态从 NVS 恢复）：
+
+```
+S=IDLE AZ=350.71 ALT=20.39 ... RA=9.9631 DEC=+68.92 TGT=9.9628/+68.93 ...
+```
+
+`TGT` 与 Stellarium 下发的 M81 目标（09:57:46 / +68:55:56 = 9.9628 h / 68.93°）一致，
+`RA/DEC` 与 `TGT` 误差 ≤1 秒/0.01°，即 **goto 最终停在目标坐标上**，问题已修复。
+
+## 8.6 使用建议（重要）
+
+- **每次启动 Stellarium 用 `tools\start_stellarium.bat`（或 `python tools\start_stellarium.py`）**，
+  它会先把板子时钟/站点同步到当前值；直接双击 `stellarium.exe` 不会对时，断电放几天后再用仍会偏。
+- 如果已经出现坐标偏移：运行一次启动器（`:XW`/`:XC` 会自动清掉 sync 偏移），或在串口发 `:XR#`。
+- 目标在地平线以下时 `:MS#` 会返回失败、电机不动（v1.2.0 起），GUI 里表现为 slew 失败提示。
+- 长时间连续使用（数小时）时板载时钟约有 1~2% 漂移，指向会缓慢漂移；重新运行启动器即可校准。
+

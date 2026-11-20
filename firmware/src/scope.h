@@ -30,13 +30,24 @@ bool scopeSlewing();
 
 // Persisted state (NVS restore after a reset).  Coordinates are in the client
 // (equinox) frame, identical to the :Sr/:Sd arguments.  No motion is started.
-void scopeGetState(double* tgtRa, double* tgtDec, bool* haveTarget,
-                   double* syncRaOffH, double* syncDecOffD, bool* tracking);
-void scopeRestoreState(double tgtRa, double tgtDec, bool haveTarget,
-                       double syncRaOffH, double syncDecOffD, bool tracking);
+// NOTE: sync offsets are deliberately NOT part of the persisted state; they are
+// only valid for the current power session (cleared on :XW / :XC / :XR / boot).
+void scopeGetState(double* tgtRa, double* tgtDec, bool* haveTarget, bool* tracking);
+void scopeRestoreState(double tgtRa, double tgtDec, bool haveTarget, bool tracking);
 
 // Forget target / tracking / sync offsets (pointing reset).  Does not move axes.
 void scopeClearTarget();
+
+// Drop the sync offsets (time/site changed or explicit reset) and recompute the
+// motion target for the (still selected) requested target.
+void scopeClearSyncOffsets();
+
+// Sync offset + requested target (for :XS# diagnostics).
+void scopeGetSyncInfo(double* syncRaOffH, double* syncDecOffD,
+                      double* reqRa, double* reqDec, bool* haveTarget);
+
+// One-line :XS# payload (no '#'), e.g. "SYN=+00.0000/+00.00 TGTREQ=19.8464/+8.87"
+void scopeSyncDiag(char* out, size_t outLen);
 
 // One-line ASCII diagnostics, no '#' inside, for the :XG# command.
 void scopeDiag(char* out, size_t outLen);

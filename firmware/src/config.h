@@ -75,7 +75,7 @@
 // the ESP32 ROM bootloader baud (upload_speed), unrelated to this value.
 #define LX200_BAUD          9600
 #define PRODUCT_NAME        "FYSETC E4 AltAz"
-#define FIRMWARE_VERSION    "1.1.0"
+#define FIRMWARE_VERSION    "1.2.0"
 
 // Client (Stellarium) coordinate frame.  The recommended telescope configuration
 // uses "equinox": "JNow" (see docs/stellarium-config.md), i.e. the client sends

@@ -1,0 +1,35 @@
+// Stellarium 23.4 startup script for the Fysetc Alt-az mount (actual-time mode).
+//
+// 与 startup.ssc 的区别：本脚本**不**改 Stellarium 的时间/地点，直接用当前的
+// 真实时间和 Stellarium 里已设置的观测地——这是日常使用的方式。配合
+// tools\start_stellarium.py 使用（它会在启动 Stellarium 前把同样的 UTC/站点写进板子）。
+//
+// 用法：
+//   python tools\start_stellarium.py --lat <纬度> --lon <经度> --startup-script tools\startup_actual.ssc
+//
+// 目标选的是北京可见的天体：北极星（永远在地平线上）+ M81（拱极星，北天）。
+// 脚本执行时机：TelescopeControl 自动连接之后；打开 COM7 会复位 ESP32，需等
+// Stellarium 从 5s 超时 + 10s 静默中恢复。
+
+var e2eLabel = LabelMgr.labelScreen("FYSETC E4 AltAz (actual time)", 20, 20, false, 22, "#00ff00");
+LabelMgr.setLabelShow(e2eLabel, true);
+
+// 等自动连接完成 + 串口通信从复位中恢复
+core.wait(22);
+
+// 目标 1：北极星（ALT ~40°，AZ ~0°）
+core.selectObjectByName("Polaris", false);
+TelescopeControl.slewTelescopeToSelectedObject(1);
+core.wait(12);
+
+// 目标 2：M81（拱极星，AZ/ALT 都变化明显，可验证两轴）
+core.selectObjectByName("M81", false);
+TelescopeControl.slewTelescopeToSelectedObject(1);
+core.wait(12);
+
+// 把视野对到望远镜位置 + 放大，便于截图/肉眼检查标记是否在目标上
+TelescopeControl.centeringScreenByTelescope(1);
+StelMovementMgr.zoomTo(12, 1);
+core.wait(2);
+
+// 说明：脚本结束后 Stellarium 继续运行。

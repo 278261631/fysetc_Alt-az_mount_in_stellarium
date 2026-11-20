@@ -13,13 +13,18 @@ enum ScopeState { ST_IDLE = 0, ST_SLEW = 1 };
 
 static ScopeState s_state = ST_IDLE;
 static bool       s_haveTarget = false;
-static double     s_tgtRa = 0.0;      // hours
-static double     s_tgtDec = 0.0;     // degrees
+static double     s_tgtRa = 0.0;      // requested target (client frame), hours
+static double     s_tgtDec = 0.0;     // requested target (client frame), degrees
+static double     s_moveRa = 0.0;     // motion target = requested - sync offset, hours
+static double     s_moveDec = 0.0;    // motion target = requested - sync offset, degrees
 static bool       s_tracking = false;
 static double     s_syncRaOffH = 0.0; // hours added to the reported RA
 static double     s_syncDecOffD = 0.0;
 static uint32_t   s_slewStartMs = 0;
 static uint32_t   s_lastTrackMs = 0;
+
+// Tolerated overshoot of the ALT software limits before a goto is refused.
+static const double kAltGotoToleranceDeg = 2.0;
 
 static bool validCoords(double raHours, double decDeg) {
   if (!isfinite(raHours) || !isfinite(decDeg)) return false;
@@ -52,6 +57,23 @@ static void clientToDate(double raClient, double decClient, double* raDate, doub
 #endif
 }
 
+// Motion target = requested target minus the sync offset (client frame).
+// The goto AND the tracking loop use this compensated value, so that the
+// reported pointing (mount pointing + sync offset) converges on the requested
+// target even while a sync offset is active.
+static void updateMoveTarget() {
+  if (!s_haveTarget) {
+    s_moveRa = 0.0;
+    s_moveDec = 0.0;
+    return;
+  }
+  s_moveRa = astroNormalizeHours(s_tgtRa - s_syncRaOffH);
+  double md = s_tgtDec - s_syncDecOffD;
+  if (md > 90.0)  md = 90.0;
+  if (md < -90.0) md = -90.0;
+  s_moveDec = md;
+}
+
 void scopeBegin() {
   s_state = ST_IDLE;
   s_haveTarget = false;
@@ -60,6 +82,8 @@ void scopeBegin() {
   s_syncDecOffD = 0.0;
   s_tgtRa = 0.0;
   s_tgtDec = 0.0;
+  s_moveRa = 0.0;
+  s_moveDec = 0.0;
   s_slewStartMs = millis();
   s_lastTrackMs = millis();
 }
@@ -67,19 +91,39 @@ void scopeBegin() {
 bool scopeGotoRaDec(double raHours, double decDeg) {
   if (!validCoords(raHours, decDeg)) return false;
 
-  // Stellarium target (J2000 by default) -> local equatorial of date -> alt/az.
+  const double reqRa = astroNormalizeHours(raHours);
+  const double reqDec = decDeg;
+
+  // A) Compensation: the mount must physically point at (requested - offset)
+  // so that reported pointing (mount + offset) equals the requested target.
+  const double moveRa = astroNormalizeHours(reqRa - s_syncRaOffH);
+  double moveDec = reqDec - s_syncDecOffD;
+  if (moveDec > 90.0)  moveDec = 90.0;
+  if (moveDec < -90.0) moveDec = -90.0;
+
+  // Client (equinox) frame -> local equatorial of date -> alt/az.
   double raDate = 0.0, decDate = 0.0;
-  clientToDate(astroNormalizeHours(raHours), decDeg, &raDate, &decDate);
+  clientToDate(moveRa, moveDec, &raDate, &decDate);
   double alt = 0.0, az = 0.0;
   astroRaDecToAltAz(raDate, decDate, &alt, &az);
   if (!isfinite(alt) || !isfinite(az)) return false;
 
-  s_tgtRa = astroNormalizeHours(raHours);
-  s_tgtDec = decDeg;
+  // C) Do not silently clamp a clearly unreachable target: refuse the goto so
+  // the client gets :MS# -> "1#" instead of stopping at a bogus position.
+  if (alt < ALT_MIN_DEG - kAltGotoToleranceDeg ||
+      alt > ALT_MAX_DEG + kAltGotoToleranceDeg) {
+    return false;
+  }
+
+  // Commit the new target only after it passed validation.
+  s_tgtRa = reqRa;
+  s_tgtDec = reqDec;
+  s_moveRa = moveRa;
+  s_moveDec = moveDec;
   s_haveTarget = true;
 
   motionAzMoveToDeg(az);
-  motionAltMoveToDeg(alt);   // clamped to ALT_MIN..ALT_MAX
+  motionAltMoveToDeg(alt);   // within tolerance -> clamp to the ALT limits
 
   s_state = ST_SLEW;
   s_tracking = false;
@@ -104,6 +148,7 @@ bool scopeSyncRaDec(double raHours, double decDeg) {
   s_tgtRa = astroNormalizeHours(raHours);
   s_tgtDec = decDeg;
   s_haveTarget = true;
+  updateMoveTarget();   // compensated motion target; no motion for a sync
   s_tracking = false;
   if (s_state == ST_SLEW) {
     motionStopAll();
@@ -118,26 +163,22 @@ void scopeStop() {
   s_state = ST_IDLE;
 }
 
-void scopeGetState(double* tgtRa, double* tgtDec, bool* haveTarget,
-                   double* syncRaOffH, double* syncDecOffD, bool* tracking) {
-  if (tgtRa)       *tgtRa = s_tgtRa;
-  if (tgtDec)      *tgtDec = s_tgtDec;
-  if (haveTarget)  *haveTarget = s_haveTarget;
-  if (syncRaOffH)  *syncRaOffH = s_syncRaOffH;
-  if (syncDecOffD) *syncDecOffD = s_syncDecOffD;
-  if (tracking)    *tracking = s_tracking;
+void scopeGetState(double* tgtRa, double* tgtDec, bool* haveTarget, bool* tracking) {
+  if (tgtRa)      *tgtRa = s_tgtRa;
+  if (tgtDec)     *tgtDec = s_tgtDec;
+  if (haveTarget) *haveTarget = s_haveTarget;
+  if (tracking)   *tracking = s_tracking;
 }
 
-void scopeRestoreState(double tgtRa, double tgtDec, bool haveTarget,
-                       double syncRaOffH, double syncDecOffD, bool tracking) {
-  if (!validCoords(tgtRa, tgtDec) || !isfinite(syncRaOffH) || !isfinite(syncDecOffD)) {
-    return;
-  }
+void scopeRestoreState(double tgtRa, double tgtDec, bool haveTarget, bool tracking) {
+  if (!validCoords(tgtRa, tgtDec)) return;
   s_tgtRa = astroNormalizeHours(tgtRa);
   s_tgtDec = tgtDec;
   s_haveTarget = haveTarget;
-  s_syncRaOffH = syncRaOffH;
-  s_syncDecOffD = syncDecOffD;
+  // A fresh boot always starts with zero sync offsets (not persisted).
+  s_syncRaOffH = 0.0;
+  s_syncDecOffD = 0.0;
+  updateMoveTarget();
   s_tracking = tracking && haveTarget;
   s_state = ST_IDLE;
   s_slewStartMs = millis();
@@ -151,7 +192,35 @@ void scopeClearTarget() {
   s_syncDecOffD = 0.0;
   s_tgtRa = 0.0;
   s_tgtDec = 0.0;
+  s_moveRa = 0.0;
+  s_moveDec = 0.0;
   s_state = ST_IDLE;
+}
+
+void scopeClearSyncOffsets() {
+  s_syncRaOffH = 0.0;
+  s_syncDecOffD = 0.0;
+  updateMoveTarget();
+}
+
+void scopeGetSyncInfo(double* syncRaOffH, double* syncDecOffD,
+                      double* reqRa, double* reqDec, bool* haveTarget) {
+  if (syncRaOffH)  *syncRaOffH = s_syncRaOffH;
+  if (syncDecOffD) *syncDecOffD = s_syncDecOffD;
+  if (reqRa)       *reqRa = s_tgtRa;
+  if (reqDec)      *reqDec = s_tgtDec;
+  if (haveTarget)  *haveTarget = s_haveTarget;
+}
+
+void scopeSyncDiag(char* out, size_t outLen) {
+  if (!out || outLen == 0) return;
+  if (s_haveTarget) {
+    snprintf(out, outLen, "SYN=%+.4f/%+.2f TGTREQ=%.4f/%+.2f",
+             s_syncRaOffH, s_syncDecOffD, s_tgtRa, s_tgtDec);
+  } else {
+    snprintf(out, outLen, "SYN=%+.4f/%+.2f TGTREQ=NONE",
+             s_syncRaOffH, s_syncDecOffD);
+  }
 }
 
 void scopeUpdate() {
@@ -170,8 +239,9 @@ void scopeUpdate() {
   if (s_tracking && s_haveTarget &&
       (uint32_t)(now - s_lastTrackMs) >= TRACK_INTERVAL_MS) {
     s_lastTrackMs = now;
+    // Track the COMPENSATED motion target (see updateMoveTarget()).
     double raDate = 0.0, decDate = 0.0;
-    clientToDate(s_tgtRa, s_tgtDec, &raDate, &decDate);
+    clientToDate(s_moveRa, s_moveDec, &raDate, &decDate);
     double alt = 0.0, az = 0.0;
     astroRaDecToAltAz(raDate, decDate, &alt, &az);
     if (isfinite(alt) && isfinite(az)) {

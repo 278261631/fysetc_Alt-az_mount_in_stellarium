@@ -2,6 +2,11 @@
 
 > 目标：把「Fysetc AltAz」预置成 Stellarium 23.4 的直连 LX200 串口望远镜（COM7），并让它在 Stellarium 启动时**自动连接**，无需点 GUI。
 > 所有格式均来自 v23.4 源码（行号见 §8）。**重要纠正**：望远镜列表**不在 config.ini**，而在 `%APPDATA%\Stellarium\modules\TelescopeControl\telescopes.json`；config.ini 只负责「启动时加载插件」和显示选项。
+>
+> **使用提醒**：板子没有电池 RTC，而 Stellarium 直连 LX200 不同步时间/地点。日常请用启动器
+> `tools\start_stellarium.py`（或双击 `tools\start_stellarium.bat`）启动 Stellarium，它会先把 PC 当前
+> UTC 与站点通过 `:XW`/`:XC` 写进板子；否则断电后时钟过期会导致 goto 停错位置。详见
+> `docs/e2e-verification.md` §8。
 
 ---
 

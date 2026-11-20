@@ -40,7 +40,7 @@ Stellarium 23.4 的望远镜控制插件里，「Meade LX200 (compatible)」直�
 2. 驱动两轴步进到目标，并在 goto 后按恒星时率持续开环跟踪；
 3. 把当前实际 ALT/AZ 反算回 RA/Dec 上报给 Stellarium（星图标记因此能正确显示）。
 
-由于 Stellarium 不同步时间地点，**使用前需要用 `tools/set_scope.py` 把 UTC/站点写进板子**（写入 NVS，掉电/复位不丢）。Stellarium 启动脚本里固定的时间/地点必须与之一致（见 `tools/startup.ssc`）。
+由于 Stellarium 不同步时间地点，**每次使用前需要把 PC 的当前 UTC/站点写进板子**：直接运行 `tools\start_stellarium.bat` 即可（启动器会先对时再启动 Stellarium）。板子没有电池 RTC，断电后时钟会停留在上次值——这就是「goto 后停的位置不对」最常见的原因，详见 §6 与 [docs/e2e-verification.md](docs/e2e-verification.md) §8。
 
 ## 3. 目录结构
 
@@ -54,12 +54,17 @@ docs/
   stellarium-config.md     Stellarium 配置注入、telescopes.json、启动脚本、GUI 操作
   images/                  验收截图
 tools/
-  set_scope.py             通过 COM7 设置固件 UTC / 站点，打印 :XG# 状态
+  start_stellarium.py      启动器：先 :XW/:XC 对时设站，再启动 Stellarium
+  start_stellarium.bat    双击即可（默认北京站点，可自行改 --lat/--lon）
+  set_scope.py             只对时/设站，打印 :XG# 状态
   deploy_stellarium.py     一键写入 Stellarium 配置（config.ini + telescopes.json）
   stellarium_sim.py        验收工具：按 Stellarium 真实字节序列测协议（connect/status/goto/abort/setclock）
+  regression_v120.py       v1.2.0 坐标一致性回归测试（sync 补偿/越界拒绝/对时清偏移）
   mock_lx200_mount.py      无硬件自测用的 TCP 模拟固件
-  startup.ssc              Stellarium 启动脚本（自动选目标 + goto，用于无人值守验收）
+  startup.ssc              Stellarium 启动脚本（固定时间，无人值守验收 M31/Vega）
+  startup_actual.ssc       真实时间启动脚本（北极星/M81，配合启动器做 E2E 验收）
   telescopes.json.sample   预置望远镜 JSON 样例
+  diag_scope.py            一键读取 :XG#/:XJ# 诊断
   probe_serial.py / query_marlin.py / backup_flash.py / win_util.py 等探测与工具脚本
 backup/                    原厂 Marlin 固件整片备份（large, 已 .gitignore）
 ```
@@ -92,25 +97,24 @@ python tools\deploy_stellarium.py
 2. 打开 `[plugins_load_at_startup] TelescopeControl = true`；
 3. 写入 `%APPDATA%\Stellarium\modules\TelescopeControl\telescopes.json`（望远镜名 `Fysetc AltAz`、`COM7`、启动时自动连接）。
 
-### 4.4 给板子对时 / 设站（每次使用前）
+### 4.4 启动 Stellarium，开始控制（推荐用启动器）
+
+**请用启动器启动**——它会先把板子的 UTC 和站点同步到当前值（板子没有电池 RTC，断电后时钟会过期，过期会导致 goto 停错位置）：
 
 ```powershell
-# UTC 时间 + 站点（东经/北纬为正；不写 --date 则用当前 UTC）
-python tools\set_scope.py --lat 39.9042 --lon 116.4074 --date 2026-11-18T12:00:00
+tools\start_stellarium.bat
+# 或：python tools\start_stellarium.py --lat <纬度> --lon <经度>
 ```
 
-> 板子/ESp32 没有电池 RTC，且 **Stellarium 每次打开 COM7 会因 DTR 复位板子**；对时值写在 NVS 里，复位后保留。Stellarium 打开串口后约 **15~20 秒**才会稳定（第一次轮询超时 5 s + 插件静默 10 s，属正常）。
+`start_stellarium.bat` 里预填了北京 `39.9042/116.4074`，换成你自己的观测地即可（东经/北纬为正）。
 
-### 4.5 启动 Stellarium，开始控制
+只对时不启动星图：`python tools\start_stellarium.py --no-launch`。
 
-```powershell
-& 'E:\Stellarium\stellarium.exe'
-```
-
-- 启动后望远镜会自动连接（望远镜窗口里状态为 Connected）；
+- 启动后望远镜会自动连接（望远镜窗口里状态为 Connected），等 **15~20 秒**让通信从复位中恢复；
 - 用搜索（`F3`）选中目标 → 按 **`Ctrl+1`**：望远镜 goto 该目标，电机转动；
 - `Ctrl+0` 打开 "Slew telescope to" 窗口可手动输入 RA/Dec 并 Slew；
-- `Ctrl+Shift+1` = sync 到选中目标；**Abort 对 LX200 直连无效**（Stellarium 该客户端未实现 abort），要停就再触发一次 goto（新序列开头会发 `:Q#`）。
+- `Ctrl+Shift+1` = sync 到选中目标（sync 只对本次上电有效）；**Abort 对 LX200 直连无效**（Stellarium 该客户端未实现 abort），要停就再触发一次 goto（新序列开头会发 `:Q#`）；
+- 目标在地平线以下时 v1.2.0 固件会拒绝 goto（`:MS#` 回 `1`，电机不动），Stellarium 里表现为 slew 失败。
 
 ### 4.6 无 Stellarium 的协议验收（可选）
 
@@ -124,7 +128,7 @@ python tools\stellarium_sim.py --port COM7 abort
 
 | 项目 | 结果 |
 |---|---|
-| 编译 | `pio run` SUCCESS，Flash 26.1%，RAM 8.2% |
+| 编译 | `pio run` SUCCESS（v1.2.0：Flash 26.5%，RAM 8.6%） |
 | 烧录 | `pio run -t upload` SUCCESS（COM7，460800） |
 | 固件识别 | `:GVP#` → `FYSETC E4 AltAz#` |
 | 位置查询 | `#:GR#` 9 字节、`#:GD#` 10 字节（含单字节 `0xDF`） |
@@ -135,6 +139,8 @@ python tools\stellarium_sim.py --port COM7 abort
 | Stellarium 连接 | 自动连接成功（`log.txt`: `ConnectionInternal "Fysetc AltAz:TelescopeServerLx200:JNow:COM7:500000"`，`Loaded successfully 1 telescopes`） |
 | Stellarium goto | 启动脚本 `tools/startup.ssc` 依次 goto M31 → Vega；固件 `:XJ#` 会话日志记录到 Stellarium 发来的 `:Q`/`:Sr00:44:14`/`:Sd+41°25:14`/`:MS` 与 `:Q`/`:Sr18:37:50`/`:Sd+38°48:43`/`:MS`；星图上望远镜标记落在 Vega 上（见 `docs/e2e-verification.md`、`docs/images/`） |
 | 状态持久化 | 每次打开 COM7 板子会复位，固件从 NVS 恢复上次指向/目标：实测复位后 `AZ=294.97° ALT=33.91°`、`TGT=18.6306/+38.81`（=Vega），`BOOT` 递增 |
+| goto 最终坐标 | v1.2.0 修复后：真实时间下 Stellarium goto 北极星 → M81，关闭后读固件：`TGT=9.9628/+68.93`（=Stellarium 下发的 M81 JNow `09:57:46/+68°55:56`），`RA/DEC` 与 `TGT` 误差 ≤1s/0.01°；截图里 `Fysetc AltAz` 标记落在 M81 上（`docs/images/stellarium-goto-m81-actual-time.png`） |
+| 坐标一致性回归 | `tools/regression_v120.py`：人为制造 1° sync 偏移后 goto 仍收敛到请求目标（dRA+5s/dDec−30″，约 1 步进量）；地平线以下目标被拒绝（`:MS#`→`1#`，不运动）；`:XW` 重新对时自动清 sync 偏移 —— 全 PASS |
 
 > 完整的验收过程、截图与日志证据见 **[docs/e2e-verification.md](docs/e2e-verification.md)**。
 
@@ -145,8 +151,10 @@ python tools\stellarium_sim.py --port COM7 abort
 | Stellarium 里看不到望远镜 / 自动连接失败 | 检查 `%APPDATA%\Stellarium\modules\TelescopeControl\telescopes.json` 的 `version` 必须是 `0.4.1`，且 `tcp_port`、`delay` 必填；看 `%APPDATA%\Stellarium\log.txt` |
 | 连上后 15 秒内位置不动 / 日志有 reset | 正常：打开 COM7 复位板子，Stellarium 5 s 超时 + 10 s 静默后恢复 |
 | 状态 Connected 但星图标记不动 | 板子固件没跑起来/波特率不是 9600/被其它程序占用 COM7；用 `tools\stellarium_sim.py status` 检查 |
-| goto 后标记位置偏移很大 | 板子的 UTC/站点与 Stellarium 脚本设置不一致：每 1 分钟时间误差 ≈ 0.25° 指向误差，先用 `tools\set_scope.py` 对时 |
-| 电机不转 | 检查 X/Y 电机是否插在 E4 的 X/Y 驱动位；听 TMC 是否有保持电流声；`tools\set_scope.py --status` 看 `TMC=OK` |
+| goto 后标记位置偏移很大 / 最终坐标不对 | **最常见：板子时钟过期**（无电池 RTC，Stellarium 又不同步时间）。用 `tools\start_stellarium.bat` 启动（会自动 `:XW/:XC` 对时并清除旧的 sync 偏移），或先 `python tools\set_scope.py --lat ... --lon ...`；已偏了可发 `:XR#` 复位指向。v1.2.0 起 sync 偏移不再跨上电保存，`tools\regression_v120.py` 可自检 |
+| 指向随时间缓慢漂移 | 板载时钟有 1~2% 漂移（约 1 分钟/小时），长时间使用后重新运行启动器对时即可 |
+| 选了地平线以下的目标 | v1.2.0 起 `:MS#` 回失败、电机不动（不会假装修正到地平线） |
+| 电机不转 | 检查 X/Y 电机是否插在 E4 的 X/Y 驱动位；听 TMC 是否有保持电流声；`python tools\diag_scope.py` 看 `TMC=OK` |
 | Abort 无效 | Stellarium 23.4 的 LX200 直连未实现 abort；再按一次 `Ctrl+1`（会先发 `:Q#`）或断电 |
 | 想恢复 3D 打印机用途 | 见 §8 恢复原厂 Marlin |
 
